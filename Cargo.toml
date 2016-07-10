@@ -1,0 +1,7 @@
+[package]
+name = "rustc2duchain"
+version = "0.1.0"
+authors = ["Michal Srb <michalsrb@gmail.com>"]
+
+[dependencies]
+byteorder = "0.5.3"
