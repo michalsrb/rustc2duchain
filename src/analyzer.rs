@@ -25,7 +25,7 @@
  */
 
 use rustc::hir::def::Def;
-use rustc::hir::def_id::DefId;
+use rustc::hir::def_id::{ DefId, DefIndex };
 use rustc::session::Session;
 use rustc::ty::{ Ty as RustTy, TyCtxt, TypeVariants, FnOutput };
 
@@ -289,6 +289,13 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
         self.duchain_writer.close_context().expect("Failed to write close context");
     }
 
+    fn call_build_use(&mut self, def_id: DefId, span: &Span) {
+        let cspan = self.to_myspan(&span);
+
+        self.duchain_writer.build_use(def_id.into(), &cspan).expect("Failed to write build use.");
+
+    }
+
     fn call_assign_name(&mut self, def_id: DefId) {
         let name = self.tcx.item_path_str(def_id); // TODO: Verify if this is correct for all cases.
 
@@ -321,12 +328,14 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
     fn visit_struct_field(&mut self, s: & StructField) {
         if let Some(ident) = s.ident {
             let node_types = self.tcx.node_types();
-            let ty = node_types.get(&s.ty.id);
+            let ty = node_types.get(&s.id);
             if let Some(ty) = ty {
                 self.call_build_type_with_ty(&ty);
             }
 
-            self.call_build_declaration(DeclarationKind::Instance, None, ident, &s.span, true, false /* not sure ? */, ty.is_some());
+            let def_id = self.tcx.map.opt_local_def_id(s.id);
+
+            self.call_build_declaration(DeclarationKind::Instance, def_id, ident, &s.span, true, false /* not sure ? */, ty.is_some());
         }
 
         visit::walk_struct_field(self, s);
@@ -416,9 +425,21 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         match ex.node {
             ExprKind::Path(..) => {
                 if let Some(def_id) = self.node_id_to_def_id(&ex.id) {
-                    let cspan = self.to_myspan(&ex.span);
-
-                    self.duchain_writer.build_use(def_id.into(), &cspan).expect("Failed to write bind use.");
+                    self.call_build_use(def_id, &ex.span);
+                }
+            }
+            ExprKind::Field(ref subexpression, ref ident) => {
+                // TODO: There must be better way to get field's def_id...
+                let node_types = self.tcx.node_types();
+                if let Some(ty) = node_types.get(&subexpression.id) {
+                    if let TypeVariants::TyStruct(ref adt_def, _) = ty.sty {
+                        for field in adt_def.all_fields() {
+                            if field.name == ident.node.name {
+                                self.call_build_use(field.did, &ident.span);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
