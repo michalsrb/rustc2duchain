@@ -423,11 +423,6 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
 
     fn visit_expr(&mut self, ex: & Expr) {
         match ex.node {
-            ExprKind::Path(..) => {
-                if let Some(def_id) = self.node_id_to_def_id(&ex.id) {
-                    self.call_build_use(def_id, &ex.span);
-                }
-            }
             ExprKind::Field(ref subexpression, ref ident) => {
                 // TODO: There must be better way to get field's def_id...
                 let node_types = self.tcx.node_types();
@@ -446,6 +441,14 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         }
 
         visit::walk_expr(self, ex)
+    }
+
+    fn visit_path(&mut self, path: &Path, id: NodeId) {
+        if let Some(def_id) = self.node_id_to_def_id(&id) {
+            self.call_build_use(def_id, &path.span);
+        }
+
+        visit::walk_path(self, path)
     }
 }
 
