@@ -114,10 +114,17 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
         let def_map = self.tcx.def_map.borrow();
         if let Some(path_resolution) = def_map.get(id) {
             let def = path_resolution.full_def();
-            if def == Def::Err {
-                None
-            } else {
-                Some(def.def_id())
+            match def {
+                Def::Label(..)  |
+                Def::PrimTy(..) |
+                Def::SelfTy(..) |
+                Def::Err => {
+                    // Those do not have DefId
+                    None
+                }
+                _ => {
+                    Some(def.def_id())
+                }
             }
         } else {
             None
