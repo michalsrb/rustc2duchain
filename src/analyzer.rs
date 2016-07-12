@@ -430,17 +430,11 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
     fn visit_expr(&mut self, ex: & Expr) {
         match ex.node {
             ExprKind::Field(ref subexpression, ref ident) => {
-                // TODO: There must be better way to get field's def_id...
-                let node_types = self.tcx.node_types();
-                if let Some(ty) = node_types.get(&subexpression.id) {
-                    if let TypeVariants::TyStruct(ref adt_def, _) = ty.sty {
-                        for field in adt_def.all_fields() {
-                            if field.name == ident.node.name {
-                                self.call_build_use(field.did, &ident.span);
-                                break;
-                            }
-                        }
-                    }
+                let hir_node = self.tcx.map.expect_expr(subexpression.id);
+                if let TypeVariants::TyStruct(def, _) = self.tcx.expr_ty_adjusted(&hir_node).sty {
+                    let field = def.struct_variant().field_named(ident.node.name);
+
+                    self.call_build_use(field.did, &ident.span);
                 }
             }
             _ => {}
