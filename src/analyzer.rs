@@ -111,6 +111,12 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
     }
 
     fn node_id_to_def_id(&self, id: &NodeId) -> Option<DefId> {
+        // Method 1
+        if let Some(def_id) = self.tcx.map.opt_local_def_id(*id) {
+            return Some(def_id);
+        }
+
+        // Method 2
         let def_map = self.tcx.def_map.borrow();
         if let Some(path_resolution) = def_map.get(id) {
             let def = path_resolution.full_def();
@@ -293,7 +299,6 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
         let cspan = self.to_myspan(&span);
 
         self.duchain_writer.build_use(def_id.into(), &cspan).expect("Failed to write build use.");
-
     }
 
     fn call_assign_name(&mut self, def_id: DefId) {
@@ -333,7 +338,7 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
                 self.call_build_type_with_ty(&ty);
             }
 
-            let def_id = self.tcx.map.opt_local_def_id(s.id);
+            let def_id = self.node_id_to_def_id(&s.id);
 
             self.call_build_declaration(DeclarationKind::Instance, def_id, ident, &s.span, true, false /* not sure ? */, ty.is_some());
         }
@@ -341,7 +346,7 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         visit::walk_struct_field(self, s);
     }
 
-    fn visit_item(&mut self, item: & Item) {
+    fn visit_item(&mut self, item: &Item) {
         match item.node {
             ItemKind::Struct(..) => {
                 let node_types = self.tcx.node_types();
@@ -360,7 +365,8 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
                 self.call_close_context();
             }
             ItemKind::Mod(ref module) => {
-                self.call_build_declaration(DeclarationKind::Namespace, None, item.ident, &item.span, true, false, false);
+                let def_id = self.node_id_to_def_id(&item.id);
+                self.call_build_declaration(DeclarationKind::Namespace, def_id, item.ident, &item.span, true, false, false);
 
                 self.call_open_context(ContextKind::Namespace, Some(item.ident), &item.span, true);
                 self.visit_mod(module, item.span, item.id);
@@ -444,8 +450,38 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
     }
 
     fn visit_path(&mut self, path: &Path, id: NodeId) {
-        if let Some(def_id) = self.node_id_to_def_id(&id) {
-            self.call_build_use(def_id, &path.span);
+        // Skip paths that have no length (that typically means that they are part of code that got generated)
+        if path.span.lo != path.span.hi {
+            // If the path has multiple segments, break it and build use for each piece individually
+            // TODO: Easier way to get the def_id for the path segments?
+            if path.segments.len() > 1 {
+                let mut segment_id = id;
+                let mut segment_span = path.span.clone();
+
+                let codemap = &self.session.codemap();
+                match codemap.span_to_snippet(path.span) {
+                    Ok(ref span_source) => {
+                        for segment_source in span_source.rsplit("::") {
+
+                            segment_span.lo = BytePos(segment_span.hi.0 - segment_source.len() as u32);
+
+                            if let Some(def_id) = self.node_id_to_def_id(&segment_id) {
+                                self.call_build_use(def_id, &segment_span);
+                                segment_id = self.tcx.map.as_local_node_id(def_id).unwrap_or(segment_id); // Go back def_id -> node_id so we can navigate the actual definition up, not the path.
+                            }
+
+                            segment_id = self.tcx.map.get_parent_node(segment_id);
+
+                            segment_span.hi = BytePos(segment_span.lo.0 - 2); // "::"
+                        }
+                    }
+                    _ => {}
+                };
+            } else {
+                if let Some(def_id) = self.node_id_to_def_id(&id) {
+                    self.call_build_use(def_id, &path.span);
+                }
+            }
         }
 
         visit::walk_path(self, path)
