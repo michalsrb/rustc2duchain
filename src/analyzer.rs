@@ -437,6 +437,18 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
                     self.call_build_use(field.did, &ident.span);
                 }
             }
+            ExprKind::Struct(ref _path, ref fields, ref _optional_base) => {
+                let node_types = self.tcx.node_types();
+                if let Some(ty) = node_types.get(&ex.id) {
+                    if let TypeVariants::TyStruct(def, _) = ty.sty {
+                        for field in fields {
+                            let field_def = def.struct_variant().field_named(field.ident.node.name);
+
+                            self.call_build_use(field_def.did, &field.ident.span);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
 
