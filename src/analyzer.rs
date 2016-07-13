@@ -379,12 +379,18 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
                     def_id = self.call_build_type_with_ty(&ty);
                 }
 
-                self.call_build_declaration(DeclarationKind::Type, def_id, item.ident, &item.span, true, true, ty.is_some());
+                self.call_build_declaration(DeclarationKind::Struct, def_id, item.ident, &item.span, true, true, ty.is_some());
 
                 self.call_open_context(ContextKind::Class, Some(item.ident), &item.span, true);
-
                 visit::walk_item(self, item);
+                self.call_close_context();
+            }
+            ItemKind::Trait(..) => {
+                let def_id = self.node_id_to_def_id(&item.id);
+                self.call_build_declaration(DeclarationKind::Trait, def_id, item.ident, &item.span, true, true, false);
 
+                self.call_open_context(ContextKind::Class, Some(item.ident), &item.span, true);
+                visit::walk_item(self, item);
                 self.call_close_context();
             }
             ItemKind::Mod(ref module) => {

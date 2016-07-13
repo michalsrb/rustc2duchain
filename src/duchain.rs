@@ -65,7 +65,9 @@ pub enum DeclarationKind {
     Instance = 0,
     Function = 1,
     Type = 2,
-    Namespace = 3
+    Namespace = 3,
+    Struct = 4,
+    Trait = 5
 }
 
 enum DeclarationFlags {
