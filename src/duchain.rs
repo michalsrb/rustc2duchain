@@ -105,9 +105,10 @@ pub enum TypeKind {
     Array = 15,
     Ref = 16,
     RawPtr = 17,
-    Struct = 18,
-    Tuple = 19,
-    Function = 20
+    BoxPtr = 18,
+    Struct = 19,
+    Tuple = 20,
+    Function = 21,
 }
 
 pub trait DUChainWriter {

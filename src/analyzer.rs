@@ -194,7 +194,11 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
                 self.call_build_type_with_ty(ty);
                 self.call_build_type(TypeKind::Array, size, None);
             }
-            TypeVariants::TyBox(ty) | TypeVariants::TySlice(ty) => {
+            TypeVariants::TyBox(ty) => {
+                self.call_build_type_with_ty(&ty);
+                self.call_build_type(TypeKind::BoxPtr, 0, None);
+            }
+            TypeVariants::TySlice(ty) => {
                 self.call_build_type_with_ty(&ty); // TODO!
             }
             TypeVariants::TyRef(_, ref mt) => {
