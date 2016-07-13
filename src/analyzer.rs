@@ -324,6 +324,24 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
 
                 self.call_build_declaration(DeclarationKind::Instance, def_id, spanned_ident.node, &spanned_ident.span, false, false /* always ? */, ty.is_some());
             }
+            PatKind::Struct(_, ref fields, _) => {
+                let node_types = self.tcx.node_types();
+                if let Some(ty) = node_types.get(&p.id) {
+                    if let TypeVariants::TyStruct(def, _) = ty.sty {
+                        for field in fields {
+                            let field_def = def.struct_variant().field_named(field.node.ident.name);
+
+                            // The field.span covers the whole pattern, but we want span only for the field identifier.
+                            // TODO: Nicer way to do this?
+                            let mut ident_span = field.span.clone();
+                            let name = pprust::ident_to_string(field.node.ident);
+                            ident_span.hi = BytePos::from_usize(ident_span.lo.to_usize() + name.len());
+                            self.call_build_use(field_def.did, &ident_span);
+                        }
+                    }
+                }
+
+            }
             _ => {}
         }
 
