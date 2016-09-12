@@ -407,10 +407,48 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         }
     }
 
-    fn visit_trait_item(&mut self, ti: & TraitItem) {
-        // TODO...
+    fn visit_trait_item(&mut self, trait_item: &TraitItem) {
+        match trait_item.node {
+            TraitItemKind::Method(ref sig, None) => {
+                let node_types = self.tcx.node_types();
+                let ty = node_types.get(&trait_item.id);
+                let mut def_id = None;
+                if let Some(ty) = ty {
+                    def_id = self.call_build_type_with_ty(&ty);
+                }
 
-        visit::walk_trait_item(self, ti);
+                if !self.call_build_declaration(DeclarationKind::Function, def_id, trait_item.ident, &trait_item.span, true, false /* not always? */, ty.is_some()) {
+                    // This is kind of guessing, but when we fail to find the name of the function in the span, it may mean that it is derived function, so lets now dive into it.
+                    return;
+                }
+
+                self.call_open_context(ContextKind::Function, Some(trait_item.ident), &trait_item.span, true);
+
+                // Following two are copied from the default visit_trait_item
+                self.visit_generics(&sig.generics);
+                visit::walk_fn_decl(self, &sig.decl);
+
+                self.call_close_context();
+            }
+            TraitItemKind::Method(ref _sig, Some(ref _body)) => {
+                // This gets handled by visit_fn. TODO: Special handling because we are in trait?
+            }
+            TraitItemKind::Type(ref _bounds, ref _default) => {
+                // TODO?
+
+                visit::walk_trait_item(self, trait_item);
+            }
+            TraitItemKind::Const(ref _ty, ref _default) => {
+                // TODO?
+
+                visit::walk_trait_item(self, trait_item);
+            }
+            TraitItemKind::Macro(ref _mac) => {
+                // TODO?
+
+                visit::walk_trait_item(self, trait_item);
+            }
+        }
     }
 
     fn visit_fn(&mut self, function_kind: FnKind<>, function_declaration: & FnDecl, function_body: & Block, span: Span, node_id: NodeId) {
@@ -569,7 +607,8 @@ pub fn analyze<T, L>(file: &str, library_search_dirs: &[String], duchain_writer:
         "-Z".to_string(), "keep-ast".to_string(),
         "-Z".to_string(), "continue-parse-after-error".to_string(),
         "-Z".to_string(), "unstable-options".to_string(), "--error-format=json".to_string(),
-        file.to_string()
+        file.to_string(),
+        "-L".to_string(), "/home/michal/.multirust/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/lib".to_string(), // XXX!
     ];
 
     for library_search_dir in library_search_dirs {
