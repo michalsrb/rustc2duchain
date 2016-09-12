@@ -27,7 +27,7 @@
 use rustc::hir::def::Def;
 use rustc::hir::def_id::{ DefId, DefIndex };
 use rustc::session::Session;
-use rustc::ty::{ Ty as RustTy, TyCtxt, TypeVariants, FnOutput };
+use rustc::ty::{ Ty as RustTy, TyCtxt, TypeVariants };
 
 use rustc_driver::{ self, CompilerCalls, Compilation };
 use rustc_driver::driver::{ CompileController };
@@ -237,14 +237,7 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
 
                 let sig = ft.sig.skip_binder();
 
-                match sig.output {
-                    FnOutput::FnConverging(ref ty) => {
-                        self.call_build_type_with_ty(ty);
-                    }
-                    FnOutput::FnDiverging => {
-                        self.call_build_type(TypeKind::Tuple, 0, None); // Empty tuple for now. TODO: Change to something else?
-                    }
-                }
+                self.call_build_type_with_ty(&sig.output);
 
                 for input in &sig.inputs {
                     self.call_build_type_with_ty(&input);
