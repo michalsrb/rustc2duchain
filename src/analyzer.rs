@@ -149,7 +149,7 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
 
     fn call_build_type_with_ty(&mut self, ty: &RustTy) -> Option<DefId> {
         let def_id = match ty.sty {
-            TypeVariants::TyStruct(ref adt_def, ..) => {
+            TypeVariants::TyAdt(ref adt_def, ..) => {
                 Some(adt_def.did)
             }
             TypeVariants::TyClosure(fn_def_id, ..) |
@@ -216,11 +216,12 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
             TypeVariants::TyTrait(..) => {
                 // TODO?
             }
-            TypeVariants::TyEnum(..) => {
-                // TODO?
-            }
-            TypeVariants::TyStruct(..) => {
-                self.call_build_type(TypeKind::Struct, 0, def_id);
+            TypeVariants::TyAdt(ref adt, ..) => {
+                if adt.is_struct() {
+                    self.call_build_type(TypeKind::Struct, 0, def_id);
+                } else {
+                    // TODO?
+                }
             }
             TypeVariants::TyClosure(..) => {
                 // TODO?
@@ -244,6 +245,12 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
                 }
 
                 self.call_build_type(TypeKind::Function, sig.inputs.len(), def_id);
+            }
+            TypeVariants::TyNever => {
+                // TODO?
+            }
+            TypeVariants::TyAnon(..) => {
+                // TODO?
             }
         };
 
@@ -325,7 +332,7 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
             PatKind::Struct(_, ref fields, _) => {
                 let node_types = self.tcx.node_types();
                 if let Some(ty) = node_types.get(&p.id) {
-                    if let TypeVariants::TyStruct(def, _) = ty.sty {
+                    if let TypeVariants::TyAdt(def, _) = ty.sty {
                         for field in fields {
                             let field_def = def.struct_variant().field_named(field.node.ident.name);
 
@@ -453,7 +460,7 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         match ex.node {
             ExprKind::Field(ref subexpression, ref ident) => {
                 let hir_node = self.tcx.map.expect_expr(subexpression.id);
-                if let TypeVariants::TyStruct(def, _) = self.tcx.expr_ty_adjusted(&hir_node).sty {
+                if let TypeVariants::TyAdt(def, _) = self.tcx.expr_ty_adjusted(&hir_node).sty {
                     let field = def.struct_variant().field_named(ident.node.name);
 
                     self.call_build_use(field.did, &ident.span);
@@ -462,7 +469,7 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
             ExprKind::Struct(ref _path, ref fields, ref _optional_base) => {
                 let node_types = self.tcx.node_types();
                 if let Some(ty) = node_types.get(&ex.id) {
-                    if let TypeVariants::TyStruct(def, _) = ty.sty {
+                    if let TypeVariants::TyAdt(def, _) = ty.sty {
                         for field in fields {
                             let field_def = def.struct_variant().field_named(field.ident.node.name);
 
