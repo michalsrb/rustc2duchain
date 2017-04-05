@@ -24,10 +24,14 @@
  *
  */
 
+use rustc::hir;
 use rustc::hir::def::Def;
-use rustc::hir::def_id::{ DefId, DefIndex };
+use rustc::hir::map::Node;
+
+use rustc::hir::def_id::DefId;
 use rustc::session::Session;
-use rustc::ty::{ Ty as RustTy, TyCtxt, TypeVariants };
+use rustc::ty;
+use rustc::ty::{ Ty as RustTy, TyCtxt, TypeckTables, TypeVariants };
 
 use rustc_driver::{ self, CompilerCalls, Compilation };
 use rustc_driver::driver::{ CompileController };
@@ -47,7 +51,7 @@ use duchain::{ DUChainWriter, MyDefId, MySpan, DeclarationKind, ContextKind, Typ
 
 impl Into<MyDefId> for DefId {
     fn into(self) -> MyDefId {
-        MyDefId(((self.krate as u64) << 32) | self.index.as_u32() as u64)
+        MyDefId(((self.krate.as_u32() as u64) << 32) | self.index.as_u32() as u64)
     }
 }
 
@@ -62,6 +66,8 @@ impl Into<MyDefId> for Option<DefId> {
 
 struct DeclarationBuilder<'a, 'gcx: 'a+'tcx, 'tcx: 'a, DUW: DUChainWriter+'a> {
     tcx: &'a TyCtxt<'a, 'gcx, 'tcx>,
+    tables: &'a TypeckTables<'tcx>,
+
     session: &'a Session,
 
     duchain_writer: &'a mut DUW,
@@ -70,9 +76,11 @@ struct DeclarationBuilder<'a, 'gcx: 'a+'tcx, 'tcx: 'a, DUW: DUChainWriter+'a> {
 }
 
 impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUChainWriter {
-    fn new(tcx: &'a TyCtxt<'a, 'gcx, 'tcx>, session: &'a Session, duchain_writer: &'a mut DUW) -> Self {
+    fn new(tcx: &'a TyCtxt<'a, 'gcx, 'tcx>, session: &'a Session, staring_tables: &'a TypeckTables<'tcx>, duchain_writer: &'a mut DUW) -> Self {
         DeclarationBuilder {
             tcx: tcx,
+            tables: staring_tables,
+
             session: session,
 
             duchain_writer: duchain_writer,
@@ -107,33 +115,6 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
                 }
             }
             _ => None
-        }
-    }
-
-    fn node_id_to_def_id(&self, id: &NodeId) -> Option<DefId> {
-        // Method 1
-        if let Some(def_id) = self.tcx.map.opt_local_def_id(*id) {
-            return Some(def_id);
-        }
-
-        // Method 2
-        let def_map = self.tcx.def_map.borrow();
-        if let Some(path_resolution) = def_map.get(id) {
-            let def = path_resolution.full_def();
-            match def {
-                Def::Label(..)  |
-                Def::PrimTy(..) |
-                Def::SelfTy(..) |
-                Def::Err => {
-                    // Those do not have DefId
-                    None
-                }
-                _ => {
-                    Some(def.def_id())
-                }
-            }
-        } else {
-            None
         }
     }
 
@@ -194,12 +175,8 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
                 self.call_build_type_with_ty(ty);
                 self.call_build_type(TypeKind::Array, size, None);
             }
-            TypeVariants::TyBox(ty) => {
-                self.call_build_type_with_ty(&ty);
-                self.call_build_type(TypeKind::BoxPtr, 0, None);
-            }
-            TypeVariants::TySlice(ty) => {
-                self.call_build_type_with_ty(&ty);
+            TypeVariants::TySlice(ref ty) => {
+                self.call_build_type_with_ty(ty);
                 self.call_build_type(TypeKind::Array, 0, None);
             }
             TypeVariants::TyRef(_, ref mt) => {
@@ -213,12 +190,12 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
             TypeVariants::TyProjection(_) => {
                 // TODO?
             }
-            TypeVariants::TyTrait(..) => {
-                // TODO?
-            }
             TypeVariants::TyAdt(ref adt, ..) => {
                 if adt.is_struct() {
                     self.call_build_type(TypeKind::Struct, 0, def_id);
+                } else if adt.is_box() {
+                    self.call_build_type_with_ty(&ty.boxed_ty());
+                    self.call_build_type(TypeKind::BoxPtr, 0, None);
                 } else {
                     // TODO?
                 }
@@ -226,7 +203,7 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
             TypeVariants::TyClosure(..) => {
                 // TODO?
             }
-            TypeVariants::TyTuple(ref ts) => {
+            TypeVariants::TyTuple(ref ts, ..) => {
                 for ty in *ts {
                     self.call_build_type_with_ty(ty);
                 }
@@ -236,20 +213,23 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
             TypeVariants::TyFnPtr(ref ft) => {
                 // ft.unsafety and ft.abi information should be sent too...
 
-                let sig = ft.sig.skip_binder();
+                let sig = ft.skip_binder();
 
-                self.call_build_type_with_ty(&sig.output);
+                self.call_build_type_with_ty(&ft.output().skip_binder());
 
-                for input in &sig.inputs {
+                for input in sig.inputs() {
                     self.call_build_type_with_ty(&input);
                 }
 
-                self.call_build_type(TypeKind::Function, sig.inputs.len(), def_id);
+                self.call_build_type(TypeKind::Function, sig.inputs().len(), def_id);
             }
             TypeVariants::TyNever => {
                 // TODO?
             }
             TypeVariants::TyAnon(..) => {
+                // TODO?
+            }
+            TypeVariants::TyDynamic(..) => {
                 // TODO?
             }
         };
@@ -313,25 +293,85 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
 
         self.known_def_ids.insert(def_id);
     }
+
+    // Copied from librustc_save_analysis
+    fn nest_tables<F>(&mut self, item_id: NodeId, f: F)
+        where F: FnOnce(&mut DeclarationBuilder<'a, 'gcx, 'tcx, DUW>),
+              DUW: DUChainWriter
+    {
+        let item_def_id = self.tcx.hir.local_def_id(item_id);
+        match self.tcx.maps.typeck_tables.borrow().get(&item_def_id) {
+            Some(tables) => {
+                let old_tables = self.tables;
+                self.tables = tables;
+                f(self);
+                self.tables = old_tables;
+            }
+            None => f(self),
+        }
+    }
+
+    // Copied from librustc_save_analysis
+    pub fn get_path_def(&self, id: NodeId) -> Def {
+        match self.tcx.hir.get(id) {
+            Node::NodeTraitRef(tr) => tr.path.def,
+
+            Node::NodeItem(&hir::Item { node: hir::ItemUse(ref path, _), .. }) |
+            Node::NodeVisibility(&hir::Visibility::Restricted { ref path, .. }) => path.def,
+
+            Node::NodeExpr(&hir::Expr { node: hir::ExprPath(ref qpath), .. }) |
+            Node::NodeExpr(&hir::Expr { node: hir::ExprStruct(ref qpath, ..), .. }) |
+            Node::NodePat(&hir::Pat { node: hir::PatKind::Path(ref qpath), .. }) |
+            Node::NodePat(&hir::Pat { node: hir::PatKind::Struct(ref qpath, ..), .. }) |
+            Node::NodePat(&hir::Pat { node: hir::PatKind::TupleStruct(ref qpath, ..), .. }) => {
+                self.tables.qpath_def(qpath, id)
+            }
+
+            Node::NodeLocal(&hir::Pat { node: hir::PatKind::Binding(_, def_id, ..), .. }) => {
+                Def::Local(def_id)
+            }
+
+            Node::NodeTy(&hir::Ty { node: hir::TyPath(ref qpath), .. }) => {
+                match *qpath {
+                    hir::QPath::Resolved(_, ref path) => path.def,
+                    hir::QPath::TypeRelative(..) => {
+                        if let Some(ty) = self.tcx.ast_ty_to_ty_cache.borrow().get(&id) {
+                            if let ty::TyProjection(proj) = ty.sty {
+                                for item in self.tcx.associated_items(proj.trait_ref.def_id) {
+                                    if item.kind == ty::AssociatedKind::Type {
+                                        if item.name == proj.item_name {
+                                            return Def::AssociatedTy(item.def_id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Def::Err
+                    }
+                }
+            }
+
+            _ => Def::Err
+        }
+    }
+
 }
 
-impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUChainWriter {
-    fn visit_pat(&mut self, p: & Pat) {
+impl<'ast, 'a, 'gcx, 'tcx, DUW> Visitor<'ast> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUChainWriter {
+    fn visit_pat(&mut self, p: &'ast Pat) {
         match p.node {
             PatKind::Ident(ref _binding_mode, ref spanned_ident, _) => {
-                let node_types = self.tcx.node_types();
-                let ty = node_types.get(&p.id);
+                let ty = self.tables.node_types.get(&p.id);
                 if let Some(ty) = ty {
                     self.call_build_type_with_ty(&ty);
                 }
 
-                let def_id = self.node_id_to_def_id(&p.id);
+                let def_id = self.tcx.hir.opt_local_def_id(p.id);
 
                 self.call_build_declaration(DeclarationKind::Instance, def_id, spanned_ident.node, &spanned_ident.span, false, false /* always ? */, ty.is_some());
             }
             PatKind::Struct(_, ref fields, _) => {
-                let node_types = self.tcx.node_types();
-                if let Some(ty) = node_types.get(&p.id) {
+                if let Some(ty) = self.tables.node_types.get(&p.id) {
                     if let TypeVariants::TyAdt(def, _) = ty.sty {
                         for field in fields {
                             let field_def = def.struct_variant().field_named(field.node.ident.name);
@@ -353,15 +393,14 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         visit::walk_pat(self, p)
     }
 
-    fn visit_struct_field(&mut self, s: & StructField) {
+    fn visit_struct_field(&mut self, s: &'ast StructField) {
         if let Some(ident) = s.ident {
-            let node_types = self.tcx.node_types();
-            let ty = node_types.get(&s.id);
+            let ty = self.tables.node_types.get(&s.id);
             if let Some(ty) = ty {
                 self.call_build_type_with_ty(&ty);
             }
 
-            let def_id = self.node_id_to_def_id(&s.id);
+            let def_id = self.tcx.hir.opt_local_def_id(s.id);
 
             self.call_build_declaration(DeclarationKind::Instance, def_id, ident, &s.span, true, false /* not sure ? */, ty.is_some());
         }
@@ -369,11 +408,10 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         visit::walk_struct_field(self, s);
     }
 
-    fn visit_item(&mut self, item: &Item) {
+    fn visit_item(&mut self, item: &'ast Item) {
         match item.node {
             ItemKind::Struct(..) => {
-                let node_types = self.tcx.node_types();
-                let ty = node_types.get(&item.id);
+                let ty = self.tables.node_types.get(&item.id);
                 let mut def_id: Option<DefId> = None;
                 if let Some(ty) = ty {
                     def_id = self.call_build_type_with_ty(&ty);
@@ -386,7 +424,7 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
                 self.call_close_context();
             }
             ItemKind::Trait(..) => {
-                let def_id = self.node_id_to_def_id(&item.id);
+                let def_id = self.tcx.hir.opt_local_def_id(item.id);
                 self.call_build_declaration(DeclarationKind::Trait, def_id, item.ident, &item.span, true, true, false);
 
                 self.call_open_context(ContextKind::Class, Some(item.ident), &item.span, true);
@@ -394,7 +432,7 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
                 self.call_close_context();
             }
             ItemKind::Mod(ref module) => {
-                let def_id = self.node_id_to_def_id(&item.id);
+                let def_id = self.tcx.hir.opt_local_def_id(item.id);
                 self.call_build_declaration(DeclarationKind::Namespace, def_id, item.ident, &item.span, true, false, false);
 
                 self.call_open_context(ContextKind::Namespace, Some(item.ident), &item.span, true);
@@ -407,11 +445,10 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         }
     }
 
-    fn visit_trait_item(&mut self, trait_item: &TraitItem) {
+    fn visit_trait_item(&mut self, trait_item: &'ast TraitItem) {
         match trait_item.node {
             TraitItemKind::Method(ref sig, None) => {
-                let node_types = self.tcx.node_types();
-                let ty = node_types.get(&trait_item.id);
+                let ty = self.tables.node_types.get(&trait_item.id);
                 let mut def_id = None;
                 if let Some(ty) = ty {
                     def_id = self.call_build_type_with_ty(&ty);
@@ -451,19 +488,24 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         }
     }
 
-    fn visit_fn(&mut self, function_kind: FnKind<>, function_declaration: & FnDecl, function_body: & Block, span: Span, node_id: NodeId) {
+    fn visit_fn(&mut self, function_kind: FnKind<'ast>, function_declaration: &'ast FnDecl, span: Span, node_id: NodeId) {
         let mut maybe_ident: Option<Ident> = None;
 
         // First get information about the function and skip it if it is generated one
         match function_kind {
             FnKind::ItemFn(ref ident, ..) |
             FnKind::Method(ref ident, ..) => {
+                let ty_maps = self.tcx.maps.ty.borrow();
 
-                let node_types = self.tcx.node_types();
-                let ty = node_types.get(&node_id);
-                let mut def_id = None;
+                let def_id = self.tcx.hir.opt_local_def_id(node_id);
+
+                let ty = match def_id {
+                    Some(ref d) => { ty_maps.get(d) }
+                    None => { None }
+                };
+
                 if let Some(ty) = ty {
-                    def_id = self.call_build_type_with_ty(&ty);
+                    self.call_build_type_with_ty(&ty);
                 }
 
                 if !self.call_build_declaration(DeclarationKind::Function, def_id, *ident, &span, true, false /* not always? */, ty.is_some()) {
@@ -479,34 +521,52 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         // Then walk into it wrapping parameters and body in their own scopes
         // Following is copy of visit::walk_fn with additonal wrappers
 
-        // Declaration
+        match function_kind {
+            FnKind::ItemFn(_, generics, _, _, _, _, _) => {
+                self.visit_generics(generics);
+            }
+            FnKind::Method(_, ref sig, _, _) => {
+                self.visit_generics(&sig.generics);
+            }
+            FnKind::Closure(_) => {}
+        }
+
         self.call_open_context(ContextKind::Function, maybe_ident, &span, maybe_ident.is_some());
         visit::walk_fn_decl(self, function_declaration);
 
-        // Possible generics (I think)
-        visit::walk_fn_kind(self, function_kind);
+        self.nest_tables(node_id, |v| {
+            match function_kind {
+                FnKind::ItemFn(_, _, _, _, _, _, body) |
+                FnKind::Method(_, _, _, body) => {
+                    v.call_open_context(ContextKind::Other, None, &body.span, false);
+                    v.visit_block(body);
+                }
+                FnKind::Closure(body) => {
+                    v.call_open_context(ContextKind::Other, None, &body.span, false);
+                    v.visit_expr(body);
+                }
+            }
+        });
 
-        // Body
-        self.call_open_context(ContextKind::Other, None, &function_body.span, false);
-        self.visit_block(function_body);
         self.call_close_context();
 
         self.call_close_context();
     }
 
-    fn visit_expr(&mut self, ex: & Expr) {
+    fn visit_expr(&mut self, ex: &'ast Expr) {
         match ex.node {
             ExprKind::Field(ref subexpression, ref ident) => {
-                let hir_node = self.tcx.map.expect_expr(subexpression.id);
-                if let TypeVariants::TyAdt(def, _) = self.tcx.expr_ty_adjusted(&hir_node).sty {
-                    let field = def.struct_variant().field_named(ident.node.name);
+                // TODO!
 
-                    self.call_build_use(field.did, &ident.span);
-                }
+//                 let hir_node = self.tables.expect_expr(subexpression.id);
+//                 if let TypeVariants::TyAdt(def, _) = self.tables.expr_ty_adjusted(&hir_node).sty {
+//                     let field = def.struct_variant().field_named(ident.node.name);
+//
+//                     self.call_build_use(field.did, &ident.span);
+//                 }
             }
             ExprKind::Struct(ref _path, ref fields, ref _optional_base) => {
-                let node_types = self.tcx.node_types();
-                if let Some(ty) = node_types.get(&ex.id) {
+                if let Some(ty) = self.tables.node_types.get(&ex.id) {
                     if let TypeVariants::TyAdt(def, _) = ty.sty {
                         for field in fields {
                             let field_def = def.struct_variant().field_named(field.ident.node.name);
@@ -522,39 +582,13 @@ impl<'a, 'gcx, 'tcx, DUW> Visitor<> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> 
         visit::walk_expr(self, ex)
     }
 
-    fn visit_path(&mut self, path: &Path, id: NodeId) {
+    fn visit_path(&mut self, path: &'ast Path, id: NodeId) {
         // Skip paths that have no length (that typically means that they are part of code that got generated)
         if path.span.lo != path.span.hi {
-            // If the path has multiple segments, break it and build use for each piece individually
-            // TODO: Easier way to get the def_id for the path segments?
-            if path.segments.len() > 1 {
-                let mut segment_id = id;
-                let mut segment_span = path.span.clone();
+            let def_id = self.get_path_def(id).def_id();
 
-                let codemap = &self.session.codemap();
-                match codemap.span_to_snippet(path.span) {
-                    Ok(ref span_source) => {
-                        for segment_source in span_source.rsplit("::") {
-
-                            segment_span.lo = BytePos(segment_span.hi.0 - segment_source.len() as u32);
-
-                            if let Some(def_id) = self.node_id_to_def_id(&segment_id) {
-                                self.call_build_use(def_id, &segment_span);
-                                segment_id = self.tcx.map.as_local_node_id(def_id).unwrap_or(segment_id); // Go back def_id -> node_id so we can navigate the actual definition up, not the path.
-                            }
-
-                            segment_id = self.tcx.map.get_parent_node(segment_id);
-
-                            segment_span.hi = BytePos(segment_span.lo.0 - 2); // "::"
-                        }
-                    }
-                    _ => {}
-                };
-            } else {
-                if let Some(def_id) = self.node_id_to_def_id(&id) {
-                    self.call_build_use(def_id, &path.span);
-                }
-            }
+            // TODO: Report uses of the preceeding segments of the path too.
+            self.call_build_use(def_id, &path.segments.last().unwrap().span);
         }
 
         visit::walk_path(self, path)
@@ -583,7 +617,8 @@ impl<'a, DUW> CompilerCalls<'a> for MyCompilerCalls<DUW> where DUW: DUChainWrite
                 let krate: &Crate = compile_state.expanded_crate.unwrap();
                 let session: &Session = compile_state.session;
 
-                let mut visitor = DeclarationBuilder::new(tcx, session, duchain_writer);
+                let empty_tables = TypeckTables::empty();
+                let mut visitor = DeclarationBuilder::new(tcx, session, &empty_tables, duchain_writer);
                 visit::walk_crate(&mut visitor, krate);
             }
 
@@ -616,9 +651,10 @@ pub fn analyze<T, L>(file: &str, library_search_dirs: &[String], duchain_writer:
         arguments.push(library_search_dir.clone());
     }
 
-    rustc_driver::run_compiler_with_file_loader(
+    rustc_driver::run_compiler(
         &arguments,
         &mut compiler_calls,
-        loader
+        Some(loader),
+        None
     );
 }

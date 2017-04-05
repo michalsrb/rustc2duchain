@@ -28,8 +28,6 @@
 #![feature(libc)]
 #![feature(box_syntax)]
 #![feature(box_patterns)]
-#![feature(dotdot_in_tuple_patterns)]
-#![feature(question_mark)]
 
 extern crate getopts;
 extern crate rustc;
