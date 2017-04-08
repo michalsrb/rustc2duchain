@@ -585,10 +585,21 @@ impl<'ast, 'a, 'gcx, 'tcx, DUW> Visitor<'ast> for DeclarationBuilder<'a, 'gcx, '
     fn visit_path(&mut self, path: &'ast Path, id: NodeId) {
         // Skip paths that have no length (that typically means that they are part of code that got generated)
         if path.span.lo != path.span.hi {
-            let def_id = self.get_path_def(id).def_id();
+            let def = self.get_path_def(id);
+
+            match def {
+                Def::Label(..)  |
+                Def::PrimTy(..) |
+                Def::SelfTy(..) |
+                Def::Err => {
+                    // Can not get def_id of those
+                    return;
+                }
+                _ => {}
+            }
 
             // TODO: Report uses of the preceeding segments of the path too.
-            self.call_build_use(def_id, &path.segments.last().unwrap().span);
+            self.call_build_use(def.def_id(), &path.segments.last().unwrap().span);
         }
 
         visit::walk_path(self, path)
