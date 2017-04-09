@@ -237,6 +237,19 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
         def_id
     }
 
+    fn call_build_type_for_defid(&mut self, def_id: Option<DefId>) -> bool {
+        if let Some(def_id) = def_id {
+            let ty_maps = self.tcx.maps.ty.borrow();
+
+            if let Some(ty) = ty_maps.get(&def_id) {
+                self.call_build_type_with_ty(&ty);
+                return true;
+            }
+        }
+
+        false
+    }
+
     fn call_build_declaration(&mut self, kind: DeclarationKind, def_id: Option<DefId>, ident: Ident, span: &Span, narrow_span: bool, is_definition: bool, use_last_type: bool) -> bool {
         // XXX: This is probably quite ineffective
         let name = pprust::ident_to_string(ident);
@@ -394,20 +407,9 @@ impl<'ast, 'a, 'gcx, 'tcx, DUW> Visitor<'ast> for DeclarationBuilder<'a, 'gcx, '
 
     fn visit_struct_field(&mut self, s: &'ast StructField) {
         if let Some(ident) = s.ident {
-            let ty_maps = self.tcx.maps.ty.borrow();
-
             let def_id = self.tcx.hir.opt_local_def_id(s.id);
-
-            let ty = match def_id {
-                Some(ref d) => { ty_maps.get(d) }
-                None => { None }
-            };
-
-            if let Some(ty) = ty {
-                self.call_build_type_with_ty(&ty);
-            }
-
-            self.call_build_declaration(DeclarationKind::Instance, def_id, ident, &s.span, true, false /* not sure ? */, ty.is_some());
+            let built_type = self.call_build_type_for_defid(def_id);
+            self.call_build_declaration(DeclarationKind::Instance, def_id, ident, &s.span, true, false /* not sure ? */, built_type);
         }
 
         visit::walk_struct_field(self, s);
@@ -416,20 +418,9 @@ impl<'ast, 'a, 'gcx, 'tcx, DUW> Visitor<'ast> for DeclarationBuilder<'a, 'gcx, '
     fn visit_item(&mut self, item: &'ast Item) {
         match item.node {
             ItemKind::Struct(..) => {
-                let ty_maps = self.tcx.maps.ty.borrow();
-
                 let def_id = self.tcx.hir.opt_local_def_id(item.id);
-
-                let ty = match def_id {
-                    Some(ref d) => { ty_maps.get(d) }
-                    None => { None }
-                };
-
-                if let Some(ty) = ty {
-                    self.call_build_type_with_ty(&ty);
-                }
-
-                self.call_build_declaration(DeclarationKind::Struct, def_id, item.ident, &item.span, true, true, ty.is_some());
+                let built_type = self.call_build_type_for_defid(def_id);
+                self.call_build_declaration(DeclarationKind::Struct, def_id, item.ident, &item.span, true, true, built_type);
 
                 self.call_open_context(ContextKind::Class, Some(item.ident), &item.span, true);
                 visit::walk_item(self, item);
@@ -460,13 +451,9 @@ impl<'ast, 'a, 'gcx, 'tcx, DUW> Visitor<'ast> for DeclarationBuilder<'a, 'gcx, '
     fn visit_trait_item(&mut self, trait_item: &'ast TraitItem) {
         match trait_item.node {
             TraitItemKind::Method(ref sig, None) => {
-                let ty = self.tables.node_types.get(&trait_item.id);
-                let mut def_id = None;
-                if let Some(ty) = ty {
-                    def_id = self.call_build_type_with_ty(&ty);
-                }
-
-                if !self.call_build_declaration(DeclarationKind::Function, def_id, trait_item.ident, &trait_item.span, true, false /* not always? */, ty.is_some()) {
+                let def_id = self.tcx.hir.opt_local_def_id(trait_item.id);
+                let built_type = self.call_build_type_for_defid(def_id);
+                if !self.call_build_declaration(DeclarationKind::Function, def_id, trait_item.ident, &trait_item.span, true, false /* not always? */, built_type) {
                     // This is kind of guessing, but when we fail to find the name of the function in the span, it may mean that it is derived function, so lets now dive into it.
                     return;
                 }
@@ -507,20 +494,10 @@ impl<'ast, 'a, 'gcx, 'tcx, DUW> Visitor<'ast> for DeclarationBuilder<'a, 'gcx, '
         match function_kind {
             FnKind::ItemFn(ref ident, ..) |
             FnKind::Method(ref ident, ..) => {
-                let ty_maps = self.tcx.maps.ty.borrow();
-
                 let def_id = self.tcx.hir.opt_local_def_id(node_id);
+                let built_type = self.call_build_type_for_defid(def_id);
 
-                let ty = match def_id {
-                    Some(ref d) => { ty_maps.get(d) }
-                    None => { None }
-                };
-
-                if let Some(ty) = ty {
-                    self.call_build_type_with_ty(&ty);
-                }
-
-                if !self.call_build_declaration(DeclarationKind::Function, def_id, *ident, &span, true, false /* not always? */, ty.is_some()) {
+                if !self.call_build_declaration(DeclarationKind::Function, def_id, *ident, &span, true, false /* not always? */, built_type) {
                     // This is kind of guessing, but when we fail to find the name of the function in the span, it may mean that it is derived function, so lets now dive into it.
                     return;
                 }
