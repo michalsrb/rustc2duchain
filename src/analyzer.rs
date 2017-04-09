@@ -394,12 +394,18 @@ impl<'ast, 'a, 'gcx, 'tcx, DUW> Visitor<'ast> for DeclarationBuilder<'a, 'gcx, '
 
     fn visit_struct_field(&mut self, s: &'ast StructField) {
         if let Some(ident) = s.ident {
-            let ty = self.tables.node_types.get(&s.id);
+            let ty_maps = self.tcx.maps.ty.borrow();
+
+            let def_id = self.tcx.hir.opt_local_def_id(s.id);
+
+            let ty = match def_id {
+                Some(ref d) => { ty_maps.get(d) }
+                None => { None }
+            };
+
             if let Some(ty) = ty {
                 self.call_build_type_with_ty(&ty);
             }
-
-            let def_id = self.tcx.hir.opt_local_def_id(s.id);
 
             self.call_build_declaration(DeclarationKind::Instance, def_id, ident, &s.span, true, false /* not sure ? */, ty.is_some());
         }
