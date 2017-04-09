@@ -354,7 +354,6 @@ impl<'a, 'gcx, 'tcx, DUW> DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUC
             _ => Def::Err
         }
     }
-
 }
 
 impl<'ast, 'a, 'gcx, 'tcx, DUW> Visitor<'ast> for DeclarationBuilder<'a, 'gcx, 'tcx, DUW> where DUW: DUChainWriter {
@@ -411,10 +410,17 @@ impl<'ast, 'a, 'gcx, 'tcx, DUW> Visitor<'ast> for DeclarationBuilder<'a, 'gcx, '
     fn visit_item(&mut self, item: &'ast Item) {
         match item.node {
             ItemKind::Struct(..) => {
-                let ty = self.tables.node_types.get(&item.id);
-                let mut def_id: Option<DefId> = None;
+                let ty_maps = self.tcx.maps.ty.borrow();
+
+                let def_id = self.tcx.hir.opt_local_def_id(item.id);
+
+                let ty = match def_id {
+                    Some(ref d) => { ty_maps.get(d) }
+                    None => { None }
+                };
+
                 if let Some(ty) = ty {
-                    def_id = self.call_build_type_with_ty(&ty);
+                    self.call_build_type_with_ty(&ty);
                 }
 
                 self.call_build_declaration(DeclarationKind::Struct, def_id, item.ident, &item.span, true, true, ty.is_some());
